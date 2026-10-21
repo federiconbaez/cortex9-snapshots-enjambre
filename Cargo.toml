@@ -39,3 +39,11 @@ path = "src/bin/restaurador.rs"
 [[bin]]
 name = "bench_enjambre"
 path = "src/bin/bench_enjambre.rs"
+
+[[bin]]
+name = "arranque_frio"
+path = "src/bin/arranque_frio.rs"
+
+[[bin]]
+name = "bench_valor"
+path = "src/bin/bench_valor.rs"
