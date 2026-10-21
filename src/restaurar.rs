@@ -24,8 +24,15 @@ use std::time::{Duration, Instant};
 pub enum Modo {
     Completo,
     MmapArchivo,
+    /// userfaultfd, una página por fallo (diferido puro).
     Uffd,
+    /// userfaultfd con ventana de prefetch: en cada fallo se copian hasta
+    /// [`VENTANA_PREFETCH`] páginas contiguas aún no servidas con un solo `UFFDIO_COPY`.
+    UffdPrefetch,
 }
+
+/// Páginas por `UFFDIO_COPY` en [`Modo::UffdPrefetch`] (16 × 4 KiB = 64 KiB).
+pub const VENTANA_PREFETCH: usize = 16;
 
 impl std::str::FromStr for Modo {
     type Err = String;
@@ -34,6 +41,7 @@ impl std::str::FromStr for Modo {
             "completo" => Ok(Modo::Completo),
             "mmap" => Ok(Modo::MmapArchivo),
             "uffd" => Ok(Modo::Uffd),
+            "uffd16" => Ok(Modo::UffdPrefetch),
             o => Err(format!("modo desconocido: {o}")),
         }
     }
@@ -74,7 +82,8 @@ pub fn restaurar_agente(dir: &Path, modo: Modo) -> io::Result<ResultadoRestaurar
     match modo {
         Modo::Completo => restaurar_completo(&path, tamano, &sha_esp),
         Modo::MmapArchivo => restaurar_mmap_archivo(&path, tamano, &sha_esp),
-        Modo::Uffd => restaurar_uffd(&path, tamano, &sha_esp),
+        // la API histórica sirve página por página en ambos modos uffd
+        Modo::Uffd | Modo::UffdPrefetch => restaurar_uffd(&path, tamano, &sha_esp),
     }
 }
 
@@ -284,4 +293,200 @@ pub fn resumen(man: &Manifiesto) -> String {
         man.bytes_totales,
         &man.sha256_todo[..16]
     )
+}
+
+// ---------------------------------------------------------------------------
+// API por fases (usada por el restaurador de enjambre)
+// ---------------------------------------------------------------------------
+
+/// Manejador uffd vivo mientras el proceso restaurado ya ejecuta.
+struct Manejador {
+    hilo: thread::JoinHandle<()>,
+    fin: Arc<AtomicBool>,
+    fallos: Arc<AtomicU64>,
+}
+
+/// Imagen de la región mapeada en solo lectura (fuente de `UFFDIO_COPY`), sin copia previa.
+struct ImagenMapeada {
+    ptr: *const u8,
+    len: usize,
+}
+// SAFETY: solo lectura, vive hasta que el manejador termina.
+unsafe impl Send for ImagenMapeada {}
+unsafe impl Sync for ImagenMapeada {}
+impl Drop for ImagenMapeada {
+    fn drop(&mut self) {
+        // SAFETY: mapeo propio.
+        unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
+    }
+}
+
+/// Restauración en curso de la región del agente en [`BASE`].
+///
+/// Fases medidas por el llamador con [`crate::monotonic_ns`]:
+/// `iniciar` → **listo** (se puede ejecutar), `primer_acceso` (cabecera leída,
+/// con fallo de página real en uffd), `materializar` → **carga completa**.
+pub struct Restauracion {
+    pub modo: Modo,
+    pub ptr: *mut u8,
+    pub tamano: usize,
+    manejador: Option<Manejador>,
+    _imagen: Option<Arc<ImagenMapeada>>,
+    _uffd: Option<Arc<UserfaultFd>>,
+}
+
+/// Prepara lo que no es restauración (abrir el archivo). Devuelve el archivo abierto.
+pub fn preparar(path: &Path) -> io::Result<(File, usize)> {
+    let f = File::open(path)?;
+    let len = f.metadata()?.len() as usize;
+    Ok((f, len))
+}
+
+impl Restauracion {
+    /// Mapea la región y la deja **lista para ejecutar** según el modo.
+    pub fn iniciar(archivo: &File, tamano: usize, modo: Modo) -> io::Result<Self> {
+        match modo {
+            Modo::Completo => {
+                let ptr = mapear_anon(tamano)?;
+                // leer directo al mapeo restaurado (una sola copia: page cache → región)
+                // SAFETY: `tamano` bytes escribibles en ptr.
+                let dst = unsafe { std::slice::from_raw_parts_mut(ptr, tamano) };
+                let mut leidos = 0;
+                while leidos < tamano {
+                    // SAFETY: pread a un buffer válido.
+                    let n = unsafe {
+                        libc::pread(
+                            archivo.as_raw_fd(),
+                            dst[leidos..].as_mut_ptr() as *mut libc::c_void,
+                            tamano - leidos,
+                            leidos as libc::off_t,
+                        )
+                    };
+                    if n <= 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    leidos += n as usize;
+                }
+                Ok(Self { modo, ptr, tamano, manejador: None, _imagen: None, _uffd: None })
+            }
+            Modo::MmapArchivo => {
+                // SAFETY: mmap privado del archivo en BASE.
+                let p = unsafe {
+                    libc::mmap(
+                        BASE as *mut libc::c_void,
+                        tamano,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_PRIVATE | libc::MAP_FIXED_NOREPLACE,
+                        archivo.as_raw_fd(),
+                        0,
+                    )
+                };
+                if p == libc::MAP_FAILED {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(Self { modo, ptr: p as *mut u8, tamano, manejador: None, _imagen: None, _uffd: None })
+            }
+            Modo::Uffd | Modo::UffdPrefetch => {
+                let ventana = if modo == Modo::UffdPrefetch { VENTANA_PREFETCH } else { 1 };
+                // SAFETY: mmap de solo lectura de la imagen (fuente de UFFDIO_COPY).
+                let src = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        tamano,
+                        libc::PROT_READ,
+                        libc::MAP_PRIVATE,
+                        archivo.as_raw_fd(),
+                        0,
+                    )
+                };
+                if src == libc::MAP_FAILED {
+                    return Err(io::Error::last_os_error());
+                }
+                let imagen = Arc::new(ImagenMapeada { ptr: src as *const u8, len: tamano });
+                let ptr = mapear_anon(tamano)?;
+                let uffd = Arc::new(UserfaultFd::crear()?);
+                uffd.registrar_missing(BASE as u64, tamano as u64)?;
+                let fin = Arc::new(AtomicBool::new(false));
+                let fallos = Arc::new(AtomicU64::new(0));
+                let (u, im, f, fa) = (Arc::clone(&uffd), Arc::clone(&imagen), Arc::clone(&fin), Arc::clone(&fallos));
+                let pag = crate::pagina();
+                let hilo = thread::spawn(move || {
+                    // Solo este hilo puebla la región (MISSING): el mapa de bits es exacto.
+                    let total = im.len / pag;
+                    let mut servida = vec![false; total];
+                    loop {
+                    match u.leer_pagefault() {
+                        Ok(addr) => {
+                            let idx = (addr as usize).wrapping_sub(BASE) / pag;
+                            if idx >= total || servida[idx] {
+                                continue;
+                            }
+                            let mut fin_v = idx + 1;
+                            while fin_v < total && fin_v - idx < ventana && !servida[fin_v] {
+                                fin_v += 1;
+                            }
+                            // SAFETY: rango dentro de la imagen mapeada.
+                            let s = unsafe { im.ptr.add(idx * pag) };
+                            let dst = (BASE + idx * pag) as u64;
+                            if u.copiar(dst, s, ((fin_v - idx) * pag) as u64).is_ok() {
+                                servida[idx..fin_v].iter_mut().for_each(|b| *b = true);
+                                fa.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                            if f.load(Ordering::Acquire) {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                    }
+                });
+                Ok(Self {
+                    modo,
+                    ptr,
+                    tamano,
+                    manejador: Some(Manejador { hilo, fin, fallos }),
+                    _imagen: Some(imagen),
+                    _uffd: Some(uffd),
+                })
+            }
+        }
+    }
+
+    /// Lee la cabecera (en uffd provoca un fallo de página real servido por el manejador).
+    pub fn primer_acceso(&self) -> estado::Cabecera {
+        // SAFETY: región mapeada (y servida por uffd si corresponde).
+        unsafe { estado::cabecera(self.ptr) }
+    }
+
+    /// Toca todas las páginas: deja toda la región en RAM.
+    pub fn materializar(&self) {
+        let pag = crate::pagina();
+        let mut acc = 0u8;
+        for off in (0..self.tamano).step_by(pag) {
+            // SAFETY: dentro de la región.
+            acc ^= unsafe { std::ptr::read_volatile(self.ptr.add(off)) };
+        }
+        std::hint::black_box(acc);
+    }
+
+    /// sha256 de la región restaurada.
+    pub fn sha256(&self) -> String {
+        // SAFETY: región mapeada de `tamano` bytes.
+        crate::sha256_hex(unsafe { std::slice::from_raw_parts(self.ptr, self.tamano) })
+    }
+
+    /// Detiene el manejador uffd (si lo hay) y devuelve las páginas servidas.
+    /// Llamar después de `materializar`: ya no quedan páginas por pedir.
+    pub fn cerrar_manejador(&mut self) -> u64 {
+        match self.manejador.take() {
+            Some(m) => {
+                m.fin.store(true, Ordering::Release);
+                let _ = m.hilo.join();
+                m.fallos.load(Ordering::Relaxed)
+            }
+            None => 0,
+        }
+    }
 }

@@ -130,11 +130,25 @@ fn main() {
                 .args(["-n", "/usr/sbin/criu", "check"])
                 .status();
             println!("status={st:?}");
+            // kcmp(2) es lo primero que CRIU necesita para identificar la VM de cada tarea.
+            // SAFETY: kcmp con el propio pid; solo consulta.
+            let pid = std::process::id() as libc::c_long;
+            let r = unsafe { libc::syscall(libc::SYS_kcmp, pid, pid, 0 as libc::c_long, 0 as libc::c_long, 0 as libc::c_long) };
+            let e = std::io::Error::last_os_error();
+            println!("=== kcmp(2) ===");
+            if r < 0 {
+                println!("kcmp: {e}  (CRIU dump falla en kcmp-ids.c: 'Can't make VM id')");
+            } else {
+                println!("kcmp disponible (r={r})");
+            }
             println!(
-                "nota: en esta máquina criu 4.1.1 está instalado pero `criu check` \
-                 reporta 'Does not look good' (faltan módulos diag de sockets y \
-                 sys/kernel/ns_last_pid). No se usa CRIU para el camino verificado; \
-                 el camino verificado es el agente cooperativo + volcado + uffd/mmap."
+                "ns_last_pid: {}",
+                if std::path::Path::new("/proc/sys/kernel/ns_last_pid").exists() { "presente" } else { "ausente" }
+            );
+            println!(
+                "nota: si kcmp da ENOSYS el kernel no tiene CONFIG_CHECKPOINT_RESTORE/KCMP: \
+                 CRIU no puede volcar ni procesos propios. El camino verificado es el \
+                 agente cooperativo + volcado + uffd/mmap."
             );
             let _ = congelar::cgroup_propio();
         }

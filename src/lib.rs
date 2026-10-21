@@ -5,9 +5,13 @@
 //! - [`congelar`]: congelado de N procesos con `SIGSTOP` o con el freezer de cgroup v2.
 //! - [`volcado`]: volcado de la memoria escribible (`/proc/pid/maps` + `process_vm_readv`) con manifiesto y sha256.
 //! - [`uffd`]: envoltorio mínimo de `userfaultfd(2)`.
+//! - [`consenso`]: segmento compartido en `/dev/shm`, barrera de corte consistente e invariante del enjambre.
+//! - [`enjambre`]: orquestación de N agentes: congelar_todos, volcar_todos (en paralelo), restaurar_todos con reloj común.
 //! - [`restaurar`]: restauración de una región: diferida con userfaultfd, `mmap` privado del archivo, o carga completa.
 
 pub mod congelar;
+pub mod consenso;
+pub mod enjambre;
 pub mod estado;
 pub mod restaurar;
 pub mod uffd;
@@ -18,6 +22,14 @@ use sha2::{Digest, Sha256};
 /// sha256 en hexadecimal.
 pub fn sha256_hex(datos: &[u8]) -> String {
     hex::encode(Sha256::digest(datos))
+}
+
+/// `CLOCK_MONOTONIC` en nanosegundos (comparable entre procesos de la misma máquina).
+pub fn monotonic_ns() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: puntero válido.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
 /// Tamaño de página del sistema.

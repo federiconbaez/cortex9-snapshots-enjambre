@@ -31,3 +31,11 @@ path = "src/bin/demo_roundtrip.rs"
 [[bin]]
 name = "uffd_debug"
 path = "src/bin/uffd_debug.rs"
+
+[[bin]]
+name = "restaurador"
+path = "src/bin/restaurador.rs"
+
+[[bin]]
+name = "bench_enjambre"
+path = "src/bin/bench_enjambre.rs"

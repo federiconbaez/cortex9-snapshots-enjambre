@@ -19,7 +19,8 @@ use std::time::Duration;
 fn uso() -> ! {
     eprintln!(
         "uso: agente --tamano <4M|64M|1G> [--pasos N] [--semilla U64] \
-         [--senal-listo PATH] [--senal-fin PATH] [--pausar-al-listo]"
+         [--senal-listo PATH] [--senal-fin PATH] [--pausar-al-listo] \
+         [--consenso /dev/shm/SEG --indice I]"
     );
     std::process::exit(2);
 }
@@ -44,6 +45,19 @@ fn main() {
     let senal_listo = arg(&args, "--senal-listo").map(PathBuf::from);
     let senal_fin = arg(&args, "--senal-fin").map(PathBuf::from);
     let pausar = args.iter().any(|a| a == "--pausar-al-listo");
+    // Modo consenso: segmento compartido + barrera de corte consistente.
+    let consenso = arg(&args, "--consenso").map(|r| {
+        let i: usize = arg(&args, "--indice").and_then(|s| s.parse().ok()).unwrap_or_else(|| uso());
+        let m = enjambre_snap::consenso::Mapeo::abrir(std::path::Path::new(&r)).unwrap_or_else(|e| {
+            eprintln!("no pude abrir segmento {r}: {e}");
+            std::process::exit(1);
+        });
+        if i >= m.n() {
+            eprintln!("indice {i} >= n {}", m.n());
+            std::process::exit(1);
+        }
+        (m, i)
+    });
 
     let pag = enjambre_snap::pagina();
     if tamano < 2 * pag || tamano % pag != 0 {
@@ -111,8 +125,17 @@ fn main() {
         if pasos > 0 && hechos >= pasos {
             break;
         }
+        if let Some((m, i)) = &consenso {
+            // solo entre pasos: la barrera nunca corta un paso a la mitad
+            if !m.punto_seguro(*i, || SALIR.load(Ordering::Acquire)) {
+                break;
+            }
+        }
         // SAFETY: heap válido
-        let _ = unsafe { estado::paso(ptr, tamano) };
+        let c = unsafe { estado::paso(ptr, tamano) };
+        if let Some((m, i)) = &consenso {
+            m.registrar_paso(*i, c);
+        }
         hechos += 1;
         if hechos % 10_000 == 0 {
             std::thread::sleep(Duration::from_micros(1));

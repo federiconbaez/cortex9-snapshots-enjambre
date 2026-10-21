@@ -1,0 +1,28 @@
+# criu-intento 2026-10-20T2311 ART (UTC-03:00) — kernel 6.12.94+
+## criu --version
+Version: 4.1.1
+## sudo -n criu check
+Error (criu/sockets.c:210): sockets: Diag module missing (-2)
+Error (criu/sockets.c:210): sockets: Diag module missing (-2)
+Error (criu/sockets.c:210): sockets: Diag module missing (-2)
+Can't check shutdown state of inet socket
+Error (criu/cr-check.c:160): sys/kernel/ns_last_pid sysctl is inaccessible: No such file or directory
+Warn  (criu/cr-check.c:1648): Does not look good.
+rc=1
+## criu check --unprivileged (sin root)
+CRIU needs to have the CAP_SYS_ADMIN or the CAP_CHECKPOINT_RESTORE capability: 
+setcap cap_checkpoint_restore+eip /usr/sbin/criu
+rc=1
+## sudo -n criu dump -t 864386 --leave-running --shell-job
+rc=1
+(00.001907) Error (criu/sockets.c:210): sockets: Diag module missing (-2)
+(00.004005) Error (criu/sockets.c:210): sockets: Diag module missing (-2)
+(00.005513) Error (criu/sockets.c:210): sockets: Diag module missing (-2)
+(00.038616) Error (criu/kcmp-ids.c:108): kcmp failed: pid (864396 864386) type 1 idx (0 0): Function not implemented
+(00.038618) Error (criu/cr-dump.c:651): Can't make VM id for 864386
+(00.038658) Error (criu/cr-dump.c:2111): Dumping FAILED.
+## kcmp(2) directo
+=== kcmp(2) ===
+kcmp: Function not implemented (os error 38)  (CRIU dump falla en kcmp-ids.c: 'Can't make VM id')
+ns_last_pid: ausente
+nota: si kcmp da ENOSYS el kernel no tiene CONFIG_CHECKPOINT_RESTORE/KCMP: CRIU no puede volcar ni procesos propios. El camino verificado es el agente cooperativo + volcado + uffd/mmap.

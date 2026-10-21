@@ -95,6 +95,23 @@ pub unsafe fn paso(ptr: *mut u8, tamano: usize) -> u64 {
     }
 }
 
+/// Réplica independiente: reconstruye desde cero el heap que debería tener un
+/// agente con `semilla` tras `contador` pasos (el estado es determinista).
+/// `pid_origen` se copia para comparar bit a bit con un volcado.
+pub fn reconstruir(tamano: usize, semilla: u64, contador: u64, pid_origen: u64) -> Vec<u8> {
+    let mut palabras = vec![0u64; tamano / 8];
+    let ptr = palabras.as_mut_ptr() as *mut u8;
+    // SAFETY: buffer propio alineado a 8 de `tamano` bytes.
+    unsafe {
+        inicializar(ptr, tamano, semilla);
+        (*(ptr as *mut Cabecera)).pid_origen = pid_origen;
+        for _ in 0..contador {
+            paso(ptr, tamano);
+        }
+    }
+    palabras.iter().flat_map(|w| w.to_ne_bytes()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
