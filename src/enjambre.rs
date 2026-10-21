@@ -201,6 +201,15 @@ pub struct ResultadoEnjambre {
     pub detalle_error: Option<String>,
 }
 
+struct Limpieza(Vec<PathBuf>);
+impl Drop for Limpieza {
+    fn drop(&mut self) {
+        for p in &self.0 {
+            let _ = fs::remove_file(p);
+        }
+    }
+}
+
 struct Restaurador {
     hijo: Child,
     _entrada: ChildStdin,
@@ -256,6 +265,8 @@ pub fn restaurar_todos(
     fs::write(ruta_segmento, &vol.segmento)?;
     let seg = Mapeo::abrir(ruta_segmento)?;
     let ruta_largada = ruta_segmento.with_extension("largada");
+    // borra segmento y largada aunque salgamos por un error
+    let _limpieza = Limpieza(vec![ruta_segmento.to_path_buf(), ruta_largada.clone()]);
     let largada = consenso::Largada::crear(&ruta_largada)?;
 
     let mut rs = Vec::with_capacity(n);
@@ -349,8 +360,6 @@ pub fn restaurar_todos(
     }
     drop(seg);
     drop(largada);
-    let _ = fs::remove_file(ruta_segmento);
-    let _ = fs::remove_file(&ruta_largada);
 
     Ok(ResultadoEnjambre {
         modo: modo.to_string(),
