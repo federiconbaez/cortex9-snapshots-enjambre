@@ -1,0 +1,33 @@
+[package]
+name = "enjambre_snap"
+version = "0.1.0"
+edition = "2021"
+description = "Hipervisor de snapshots de memoria para un enjambre de agentes locales"
+license = "MIT"
+
+[dependencies]
+hex = "0.4.3"
+libc = "0.2.191"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.0"
+
+[[bin]]
+name = "agente"
+path = "src/bin/agente.rs"
+
+[[bin]]
+name = "snap"
+path = "src/bin/snap.rs"
+
+[[bin]]
+name = "bench_snap"
+path = "src/bin/bench_snap.rs"
+
+[[bin]]
+name = "demo_roundtrip"
+path = "src/bin/demo_roundtrip.rs"
+
+[[bin]]
+name = "uffd_debug"
+path = "src/bin/uffd_debug.rs"
