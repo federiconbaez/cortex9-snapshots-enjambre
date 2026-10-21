@@ -68,8 +68,8 @@ Binarios: `agente`, `snap`, `bench_snap`, `demo_roundtrip`, `uffd_debug` (diagn�
 ## Resultados medidos
 
 **Máquina:** Linux `6.12.94+`, 8 núcleos, 15 GiB RAM, sin GPU, Debian 13.  
-**Fecha/hora (ART, America/Buenos_Aires):** 2026-10-20 22:55 ART (UTC-3).  
-**JSON crudo:** `resultados/bench-2026-10-20-ART.json`  
+**Fecha/hora (ART, America/Buenos_Aires):** 2026-10-21 01:55 ART (America/Buenos_Aires, UTC-3).  
+**JSON crudo:** `resultados/bench-2026-10-21-ART.json`  
 **Método:** mediana de 5 repeticiones; volcado solo de regiones anónimas escribibles.
 
 | tamaño | agentes | fase | modo | mediana_ms | &lt;5 ms |
