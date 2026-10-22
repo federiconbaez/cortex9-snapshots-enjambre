@@ -1,5 +1,11 @@
 # 03 — Snapshots de enjambre (`enjambre_snap`)
 
+> **ES:** Snapshots de memoria para congelar y restaurar un enjambre de procesos-agente (SIGSTOP, process_vm_readv, mmap, userfaultfd). Compilar/probar: `cargo build --release && cargo test --release`.
+> **EN:** Memory snapshots to freeze/restore a swarm of agent processes. Build/test: `cargo build --release && cargo test --release`.
+>
+> **Estado / Status (AUDIT-valor.md):** **FALLA el umbral #3 en general / FAILS threshold #3 in general.** Pasa solo con `snap_mmap` en 3/18 celdas; copia completa 0/18 en e2e. Restauración correcta 1620/1620 + 360/360 con sha256 idéntico. Licencia / License: Apache-2.0.
+
+
 Hipervisor de snapshots de memoria para congelar y restaurar el estado de un
 enjambre de procesos-agente locales. Parte de la prueba de Federico (sistema #3).
 
